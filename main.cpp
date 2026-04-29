@@ -1,4 +1,22 @@
+#define ENABLE_LOG 1
+#define ENABLE_DEBUG 1
+
+#if ENABLE_LOG
+#define LOG(fn, msg)    \
+  std::cout << "[LOG] " \
+            << "[" << fn << "]" << msg << std::endl
+#else
+#define LOG(msg)
+#endif
+
+#if ENABLE_DEBUG
+#define DEBUG(msg) std::cout << "[DEBUG] " << msg << std::endl
+#else
+#define DEBUG(msg)
+#endif
+
 #include <cfloat>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 
@@ -69,7 +87,6 @@ float calcTurningAngle(const Coord& from, const Coord& to, float direction) {
   return delta;
 }
 
-// 32b
 struct Drone {
   Coord position;
   float altitude;
@@ -207,9 +224,10 @@ struct Arsenal {
 
 struct Task {
   int targetId;
-  Coord* intermidiate;
-  Coord* fire;
+  Coord intermidiate;
+  Coord fire;
   float ttr;
+  bool hasIntermidiate;
 };
 
 //?
@@ -220,7 +238,6 @@ struct Targets {
 
   Coord* operator[](int i) const { return coords[i]; }
 
-  // TODO : delete after
   Coord* targetsAtT(float t, float arrayTimeStep) const {
     int idx = (int)std::floor(t / arrayTimeStep) % timeSteps;
     int next = (idx + 1) % timeSteps;
@@ -228,7 +245,6 @@ struct Targets {
 
     Coord* slice = new Coord[targetCount];
     for (int i = 0; i < targetCount; i++)
-      // should move instead of copy ?
       slice[i] = coords[i][idx] + (coords[i][next] - coords[i][idx]) * frac;
     return slice;
   }
@@ -318,18 +334,30 @@ Targets* targets(const char filename[]) {
 }
 
 Arsenal* arsenal(const char filename[]) {
-  std::ifstream fa("ammo.json");
-  json ja;
-  fa >> ja;
-  int ammoCount = ja.size();
-  Ammo* ammo = new Ammo[ammoCount];
-  for (int i = 0; i < ammoCount; i++) {
-    std::strncpy(ammo[i].name, ja[i]["name"].get<std::string>().c_str(), 31);
-    ammo[i].mass = ja[i]["mass"];
-    ammo[i].drag = ja[i]["drag"];
-    ammo[i].lift = ja[i]["lift"];
+  std::ifstream fa(filename);
+
+  if (!fa.is_open()) {
+    std::cerr << "File not found : " << filename << std::endl;
+    return nullptr;
   }
-  return new Arsenal{.size = ammoCount, .ammos = ammo};
+
+  json ja;
+
+  try {
+    fa >> ja;
+    int ammoCount = ja.size();
+    Ammo* ammo = new Ammo[ammoCount];
+    for (int i = 0; i < ammoCount; i++) {
+      std::strncpy(ammo[i].name, ja[i]["name"].get<std::string>().c_str(), 31);
+      ammo[i].mass = ja[i]["mass"];
+      ammo[i].drag = ja[i]["drag"];
+      ammo[i].lift = ja[i]["lift"];
+    }
+    return new Arsenal{.size = ammoCount, .ammos = ammo};
+  } catch (const json::exception& e) {
+    std::cerr << e.what() << std::endl;
+    return nullptr;
+  }
 }
 
 Ammo* fetchByName(const char ammo[], const Arsenal& arsenal) {
@@ -354,7 +382,7 @@ float calcTAmmo(const Drone& drone, const Ammo& ammo) {
 
   float acos_arg = (3.0f * q) / (2.0f * p) * std::sqrt(-3.0f / p);
   if (acos_arg < -1.0f || acos_arg > 1.0f) {
-    // TODO : log
+    LOG("calcTAmmo", "Zerro return");
     return 0;
   };
 
@@ -367,7 +395,7 @@ float calcTAmmo(const Drone& drone, const Ammo& ammo) {
 
 float calcHDistance(const Drone& drone, const Ammo& ammo, float ttf) {
   if (ttf == 0) {
-    // TODO : log
+    LOG("calcHDistance", "Zerro return");
     return 0;
   }
 
@@ -421,46 +449,49 @@ Task* calcTask(const Drone& drone, const Coord& target, float dtf,
 
   if (dtf + drone.accelerationPath < distance) {
     float ratio = (distance - dtf) / distance;
-    Coord* fire =
-        new Coord(drone.position + ((target - drone.position) * ratio));
-    float ttt = std::abs(calcTurningAngle(drone.position, *fire,
+
+    Coord fire = Coord{(drone.position + ((target - drone.position) * ratio))};
+
+    float ttt = std::abs(calcTurningAngle(drone.position, fire,
                                           drone.currentDirection)) /
                 drone.angularSpeed;
     float ttr =
-        calcTReach(drone.position, *fire, drone.currentSpeed, drone.attackSpeed,
+        calcTReach(drone.position, fire, drone.currentSpeed, drone.attackSpeed,
                    drone.accelerationPath, drone.acceleration());
     return new Task{.targetId = targetId,
-                    .intermidiate = nullptr,
+                    .intermidiate = fire,
                     .fire = fire,
-                    .ttr = ttr + ttt};
+                    .ttr = ttr + ttt,
+                    .hasIntermidiate = false};
   } else {
-    Coord* intermidiate =
-        new Coord(target - (target - drone.position) *
-                               (dtf + drone.accelerationPath) / distance);
-    float d2 = length(target, *intermidiate);
+    Coord intermidiate = {Coord(target - (target - drone.position) *
+                                             (dtf + drone.accelerationPath) /
+                                             distance)};
+    float d2 = length(target, intermidiate);
     float ratio = (d2 - dtf) / d2;
-    Coord* fire = new Coord(*intermidiate + ((target - *intermidiate) * ratio));
+    Coord fire = Coord{(intermidiate + ((target - intermidiate) * ratio))};
 
     // calculate time to reach from curr position to intermidiate position
     float ttrIntermidiate = calcTReach(
-        drone.position, *intermidiate, drone.currentSpeed, drone.attackSpeed,
+        drone.position, intermidiate, drone.currentSpeed, drone.attackSpeed,
         drone.accelerationPath, drone.acceleration());
 
     // calculate time to reach from intermidiate position to fire position
-    float ttrFire = calcTReach(*intermidiate, *fire, 0.0f, drone.attackSpeed,
+    float ttrFire = calcTReach(intermidiate, fire, 0.0f, drone.attackSpeed,
                                drone.accelerationPath, drone.acceleration());
 
     // calculate time to turn from intermidiate to fire
     float tttFire = std::abs(calcTurningAngle(
-                        *intermidiate, *fire,
-                        std::atan2(intermidiate->y - drone.position.y,
-                                   intermidiate->x - drone.position.x))) /
+                        intermidiate, fire,
+                        std::atan2(intermidiate.y - drone.position.y,
+                                   intermidiate.x - drone.position.x))) /
                     drone.angularSpeed;
 
     return new Task{.targetId = targetId,
                     .intermidiate = intermidiate,
                     .fire = fire,
-                    .ttr = ttrIntermidiate + tttFire + ttrFire};
+                    .ttr = ttrIntermidiate + tttFire + ttrFire,
+                    .hasIntermidiate = true};
   }
 }
 
@@ -473,14 +504,6 @@ Task* getTaskByMinTTR(Task* tasks[], int size) {
   return tasks[idx];
 }
 
-void cleanTask(Task* t) {
-  if (t == nullptr) return;
-
-  delete t->intermidiate;
-  delete t->fire;
-  delete t;
-};
-
 Output loop(const Config& c, const Targets& targets, const Ammo& a) {
   Drone drone = c.drone;
   float quant{c.simulation.timeStep};
@@ -490,7 +513,7 @@ Output loop(const Config& c, const Targets& targets, const Ammo& a) {
   float dtf = calcHDistance(drone, a, ttf);
 
   int currentTargetId = -1;
-  Task* currentTask = nullptr;
+  bool visitedIntermidiate = false;
 
   SimulationStep* result[SIM_MAX_STEPS]{};
 
@@ -516,34 +539,41 @@ Output loop(const Config& c, const Targets& targets, const Ammo& a) {
     Task* optimal = getTaskByMinTTR(predicted, targets.targetCount);
 
     if (currentTargetId == -1 || currentTargetId == optimal->targetId) {
-      cleanTask(currentTask);
-
       currentTargetId = optimal->targetId;
-      currentTask = optimal;
     } else {
-      bool hasIntermidiate = optimal->intermidiate == nullptr ? false : true;
-      float penalty = drone.penalty(hasIntermidiate ? *optimal->intermidiate
-                                                    : *optimal->fire);
+      float penalty = drone.penalty(
+          optimal->hasIntermidiate ? optimal->intermidiate : optimal->fire);
       if (optimal->ttr + penalty < predicted[currentTargetId]->ttr) {
-        cleanTask(currentTask);
-
+        if (currentTargetId != optimal->targetId) {
+          visitedIntermidiate = false;
+        }
+        DEBUG("Target switched ["
+              << currentTargetId << " ttr: " << predicted[currentTargetId]->ttr
+              << "] -> [" << optimal->targetId << " ttr: " << optimal->ttr
+              << " pen: " << penalty << "]");
         currentTargetId = optimal->targetId;
-        currentTask = optimal;
       }
     }
 
-    Coord* dropPoint = nullptr;
-    bool intermidiateReached = false;
+    if (!visitedIntermidiate)
+      visitedIntermidiate =
+          !optimal->hasIntermidiate ||
+          drone.isPositionReached(optimal->intermidiate, 0.5f);
 
-    if (optimal->intermidiate != nullptr &&
-        !drone.isPositionReached(*optimal->intermidiate, 0.1f)) {
-      dropPoint = optimal->intermidiate;
-    } else {
-      dropPoint = optimal->fire;
-      intermidiateReached = true;
-    }
+    Coord& dropPoint =
+        visitedIntermidiate ? optimal->fire : optimal->intermidiate;
+
     drone.incrementSpeed(c.simulation.timeStep);
-    drone.incrementDirection(*dropPoint, c.simulation.timeStep);
+    drone.incrementDirection(dropPoint, c.simulation.timeStep);
+    drone.incrementPosition(c.simulation.timeStep);
+
+    DEBUG("Step " << iter);
+    DEBUG("Drone "
+          << "[x: " << drone.position.x << "; y: " << drone.position.y << "]"
+          << " State : " << drone.state);
+    DEBUG("Drop "
+          << " [x: " << dropPoint.x << "; y: " << dropPoint.y
+          << "; intermidiate : " << visitedIntermidiate << "]");
 
     // will copy by value to simplify memory free
     result[iter] = new SimulationStep{
@@ -551,16 +581,27 @@ Output loop(const Config& c, const Targets& targets, const Ammo& a) {
         .direction = drone.currentDirection,
         .state = drone.state,
         .position = drone.position,
-        .dropPoint = *dropPoint,
-        .aimPoint = {},
+        .dropPoint = dropPoint,
+        .aimPoint = drone.position + Coord{std::cos(drone.currentDirection),
+                                           std::sin(drone.currentDirection)} *
+                                         dtf,
         .predictedTarget = *(interpolated[currentTargetId]),
     };
 
-    if (length(drone.position, targetsAtT[currentTargetId]) <= dtf + c.simulation.hitRadius) {
+    for (int i = 0; i < targets.targetCount; i++) {
+      delete tasks[i];
+      delete interpolated[i];
+      delete predicted[i];
+    }
+
+    if (visitedIntermidiate &&
+        length(drone.position, targetsAtT[currentTargetId]) <= dtf) {
+      delete[] targetsAtT;
+      iter++;
       break;
     }
 
-    drone.incrementPosition(c.simulation.timeStep);
+    delete[] targetsAtT;
 
     quant += c.simulation.timeStep;
     iter++;
@@ -574,7 +615,8 @@ Output loop(const Config& c, const Targets& targets, const Ammo& a) {
   return {.steps = iter, .result = simSteps};
 }
 
-void dump(const Output& out) {
+#ifdef ENABLE_DEBUG
+void dumpCsv(const Output& out) {
   std::ofstream ofs("simulation.txt");
 
   ofs << out.steps << "\n";
@@ -592,6 +634,30 @@ void dump(const Output& out) {
   for (int i = 0; i < out.steps; i++) ofs << out.result[i]->targetIndex << " ";
   ofs << "\n";
 
+  ofs.close();
+}
+#endif
+
+void dumpJson(const Output& out) {
+  nlohmann::ordered_json j;
+  j["totalSteps"] = out.steps;
+  j["steps"] = json::array();
+
+  for (int i = 0; i < out.steps; i++) {
+    const SimulationStep* s = out.result[i];
+    j["steps"].push_back(
+        {{"position", {{"x", s->position.x}, {"y", s->position.y}}},
+         {"direction", s->direction},
+         {"state", s->state},
+         {"targetIndex", s->targetIndex},
+         {"dropPoint", {{"x", s->dropPoint.x}, {"y", s->dropPoint.y}}},
+         {"aimPoint", {{"x", s->aimPoint.x}, {"y", s->aimPoint.y}}},
+         {"predictedTarget",
+          {{"x", s->predictedTarget.x}, {"y", s->predictedTarget.y}}}});
+  }
+
+  std::ofstream ofs("simulation.json");
+  ofs << j.dump(2);
   ofs.close();
 }
 
@@ -614,7 +680,23 @@ int main() {
 
   Output out = loop(*c, *t, *ammo);
 
-  dump(out);
+#ifdef ENABLE_DEBUG
+  dumpCsv(out);
+#endif
+
+  dumpJson(out);
+
+  for (int i = 0; i < out.steps; i++) delete out.result[i];
+  delete[] out.result;
+
+  delete c;
+
+  delete[] a->ammos;
+  delete a;
+
+  for (int i = 0; i < t->targetCount; i++) delete[] t->coords[i];
+  delete[] t->coords;
+  delete t;
 
   return 0;
 }
