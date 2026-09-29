@@ -1,0 +1,25 @@
+# Нормалізувати текстові файли до LF, щоб приклади однаково працювали на
+# Linux, macOS і Windows+WSL.
+* text=auto eol=lf
+
+# контейнері може падати на CRLF.
+*.sh text eol=lf
+Dockerfile text eol=lf
+
+# Сторонні vendored залежності: не рахуються як код проєкту в статистиці GitHub,
+# і не друкуються в diff при оновленні pinned-версії.
+external/** linguist-vendored
+external/c_library_v2/** -diff
+
+# Бінарні assets не проходять text normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+
+.devcontainer/scripts/* text eol=lf
