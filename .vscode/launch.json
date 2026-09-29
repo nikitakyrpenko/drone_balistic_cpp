@@ -6,7 +6,7 @@
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/drone_target_cli",
-      "args": ["gpiochip4", "/dev/ttyHS1", "24", "100", "dz12-vX7mK4qT9r2w", "<task_id>"],
+      "args": ["gpiochip4", "/dev/ttyHS1", "24", "100", "dz12-vX7mK4qT9r2w", "T06"],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
       "environment": [],
